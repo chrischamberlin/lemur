@@ -13,16 +13,21 @@
       ActionOnFailure
       AddJobFlowStepsRequest
       BootstrapActionConfig
+      Cluster
+      DescribeClusterRequest
       DescribeJobFlowsRequest
       HadoopJarStepConfig
       InstanceGroupConfig
       JobFlowInstancesConfig
       KeyValue
+      ListClustersRequest
+      ListStepsRequest
       PlacementType
       RunJobFlowRequest
       ScriptBootstrapActionConfig
       StepConfig
       StepDetail
+      StepSummary
       Tag
       TerminateJobFlowsRequest]))
 
@@ -41,60 +46,73 @@
 
 (defn flow-id [flow] (if flow (.getJobFlowId flow)))
 
+(defn cluster-id [^Cluster cluster] (if cluster (.getId cluster)))
+
 (defn flow-name [flow] (if flow (.getName flow)))
 
-(defn flow-for-name [name]
-  (let [req (.withJobFlowStates (DescribeJobFlowsRequest.)
-                                (into-array ["RUNNING" "WAITING" "STARTING"]))
-        result (.describeJobFlows *emr* req)
-        flows (.getJobFlows result)
-        flows (filter #(= (flow-name %) name) flows)]
-    (first flows)))
+(defn cluster-name [^Cluster cluster] (if cluster (.getName cluster)))
 
-(defn job-flow-detail
-  "Get the JobFlowDetail."
+(defn cluster-for-name [name]
+  "Get the first ClusterSummary found with given name"
+  (loop [marker nil]
+    (let [request (-> (ListClustersRequest.)
+                    (.withMarker marker)
+                    (.withClusterStates (into-array ["RUNNING" "WAITING" "STARTING"])))
+          result (.listClusters *emr* request)
+          found (first (filter #(= (cluster-name %) name) (.getClusters result)))
+          newmark (.getMarker result)]
+    (if (and newmark (not found))
+      (recur newmark)
+      found))))
+
+(defn cluster-for-id
+  "Get the Cluster for an id."
   [jobflow-id]
-  (->> [jobflow-id]
-       (DescribeJobFlowsRequest.)
-       (.describeJobFlows *emr*)
-       .getJobFlows
-       first))
+  (let [req (.withClusterId (DescribeClusterRequest.) jobflow-id)
+        result (.describeCluster *emr* req)]
+    (.getCluster result)))
 
 (defn jobflow-status
   "Return the state of the specified cluster."
   [jobflow-id]
-  (.. (job-flow-detail jobflow-id) getExecutionStatusDetail getState))
+  (.. (cluster-for-id jobflow-id) getStatus getState))
 
 (defn jobflow-master
   "Return the master public DNS name."
   [jobflow-id]
-  (.. (job-flow-detail jobflow-id) getInstances getMasterPublicDnsName))
+  (.. (cluster-for-id jobflow-id) getMasterPublicDnsName))
 
 (defn steps-for-jobflow [jobflow-id]
-  "Get the StepDetail objects for the given jobflow."
-  (-> jobflow-id
-      job-flow-detail
-      (#(if % (.getSteps %)))))
+  "Get the StepSummary objects for the given jobflow."
+  (loop [steps []
+         marker nil]
+    (let [request (-> (ListStepsRequest.)
+                    (.withClusterId jobflow-id)
+                    (.withMarker marker))
+          result (.listSteps *emr* request)
+          new-steps (concat steps (.getSteps result))
+          newmark (.getMarker result)]
+      (if newmark (recur new-steps newmark) new-steps))))
 
-(defn step-detail
+(defn step-summary-by-name
   "Returns the most recent StepDetail matching step-name."
   [jobflow-id step-name]
   (log/debugf "Steps for %s, looking for %s in %s"
               jobflow-id step-name (steps-for-jobflow jobflow-id))
-  (first (filter #(->> % .getStepConfig .getName (= step-name))
+  (first (filter #(->> % .getName (= step-name))
                  (steps-for-jobflow jobflow-id))))
 
 (defn step-status
   "Get the status string for this step. One of PENDING, RUNNING,
   CONTINUE, COMPLETED, CANCELLED, FAILED, INTERRUPTED"
-  ([^StepDetail sd]
-    (when sd (.getState (.getExecutionStatusDetail sd))))
+  ([^StepSummary ss]
+    (when ss (.getState (.getStatus ss))))
   ([jobflow-id step-name]
-    (step-status (step-detail jobflow-id step-name))))
+    (step-status (step-summary-by-name jobflow-id step-name))))
 
 (defn- wait-on-step*
   [end-time jobflow-id step-name test-interval-seconds]
-  (let [sd (step-detail jobflow-id step-name)]
+  (let [sd (step-summary-by-name jobflow-id step-name)]
     (condp contains? (step-status sd)
       #{nil}
         {:success false}
@@ -102,8 +120,8 @@
         {:success true}
       #{"CONTINUE" "CANCELLED" "FAILED" "INTERRUPTED"}
         {:success false
-         :step-status-detail (.getExecutionStatusDetail sd)
-         :job-status-detail (.getExecutionStatusDetail (job-flow-detail jobflow-id))}
+         :step-status-detail (.getStatus sd)
+         :job-status-detail (.getStatus (cluster-for-id jobflow-id))}
       #{"PENDING" "RUNNING"}
         (if (< (System/currentTimeMillis) end-time)
           (do

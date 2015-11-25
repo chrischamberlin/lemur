@@ -99,16 +99,16 @@
 ; These tests are specified as functions rather than a test. This is a hack to
 ; force it to run before test-wait-on-step.  It will fail if the cluster has
 ; already COMPLETED.
-(defn test-flow-for-name-and-types
+(defn test-cluster-for-name-and-types
   []
   (with-emr
-    (testing "emr/flow-for-name"
+    (testing "emr/cluster-for-name"
       (let [jf (setup)]
-        (is (nil? (flow-for-name "non-existent")))
-        (is= jf (flow-id (flow-for-name test-flow-name)))))
+        (is (nil? (cluster-for-name "non-existent")))
+        (is= jf (flow-id (cluster-for-name test-flow-name)))))
     (testing "non-default instance-types"
       (let [jf (setup)
-            flow (flow-for-name test-flow-name)
+            flow (cluster-for-name test-flow-name)
             instances (.getInstances flow)]
         (is= "m1.xlarge" (.getMasterInstanceType instances))
         (is= "m1.xlarge" (.getSlaveInstanceType instances))))))
@@ -145,7 +145,7 @@
 (deftest ^:manual test-wait-on-step
   (with-emr
     ; Run these two tests before wait-on-step, so the cluster will still be alive for them
-    (test-flow-for-name-and-types)
+    (test-cluster-for-name-and-types)
     (test-step-status)
     (test-add-steps-to-existing-flow-and-steps-for-jobflow)
     (testing "emr/wait-on-step"
@@ -159,14 +159,14 @@
 
 (deftest ^:manual test-job-flow-detail
   (with-emr
-    (testing "emr/job-flow-detail"
+    (testing "emr/cluster-for-id"
       (let [jf (setup)
-            detail (job-flow-detail jf)]
+            cluster (cluster-for-id jf)]
         (is (instance?
-              com.amazonaws.services.elasticmapreduce.model.JobFlowDetail
-              detail))
-        (is= jf (flow-id detail))
-        (is (instance? String (-> detail .getExecutionStatusDetail .getState)))))))
+              com.amazonaws.services.elasticmapreduce.model.Cluster
+              cluster))
+        (is= jf (cluster-id cluster))
+        (is (instance? String (-> cluster .getStatus .getState)))))))
 
 (deftest ^:manual test-step-detail
   (with-emr
